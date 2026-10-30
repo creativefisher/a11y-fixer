@@ -1,33 +1,84 @@
-# Chat
+# Accessibility Fixer
 
-The minimal agent-native starter app — a clean, ChatGPT-style shell with chat at
-the center, durable threads, standard app navigation, auth, live sync, and
-actions. Start here when you want a real browser app to build on without
-committing to a domain template.
+Agent-Native hackathon app: paste a public URL, get an axe-core accessibility audit, then accept or reject proposed HTML fixes.
 
-**Live app: [chat.agent-native.com](https://chat.agent-native.com?utm_source=github&utm_medium=referral&utm_content=chat-readme)**
+Built with [Builder.io Agent-Native](https://www.agent-native.com/docs) for the [Agent-Native Hackathon](https://www.builder.io/hackathon) (due Nov 9, 2026 11:59 PM PT).
 
-Chat is the basic agent-native app starting point. It gives you the app-agent
-loop wired end to end and one example action, so you can add your own UI, data,
-and actions on top.
+## What this slice does
 
-## Features
+- **Audit (no LLM):** fetches HTML, runs axe-core inside jsdom, stores issues in Postgres/PGlite.
+- **Honest limits:** color contrast is **not** checked (jsdom cannot compute real styles). The UI says so.
+- **Fix proposals (frugal):** common rules get free deterministic heuristics. Unknown rules ask you to connect Builder.io free credits (`Use Builder.io`). With `A11Y_MOCK_LLM=true`, unknown rules get a mock proposal for offline demos/tests.
+- **Accept / reject:** before/after view; accepted fixes mark the issue fixed.
 
-- ChatGPT-style shell with a threads list and durable chat history.
-- Auth, live sync, and application state wired out of the box.
-- The action surface the agent and UI share, plus one example action to copy.
-- A minimal, brandable base for any domain app.
+## Quick start
 
-## Develop locally
-
-Scaffold your own copy and run it:
+Requirements: Node.js 22+, pnpm 10+.
 
 ```bash
-npx --yes @agent-native/core@latest create my-app --standalone --template chat
-cd my-app
-corepack enable
 pnpm install
+cp .env.example .env   # AUTH_DISABLED + PGlite + A11Y_MOCK_LLM already set for local demos
 pnpm dev
 ```
 
-Full docs: [agent-native.com/docs/template-chat](https://agent-native.com/docs/template-chat?utm_source=github&utm_medium=referral&utm_content=chat-readme).
+Open the app (sign-in is skipped when `AUTH_DISABLED=true`). Land on **Audits**, paste a public URL, run an audit.
+
+### Local fixture page
+
+A page with known failures is served at `/fixtures/bad-a11y.html`. To audit it from the app:
+
+1. Set `A11Y_ALLOW_LOCAL_FETCH=true` in `.env` (private hosts are blocked by default).
+2. Restart `pnpm dev`.
+3. Audit `http://127.0.0.1:<dev-port>/fixtures/bad-a11y.html`.
+
+### CLI smoke (same actions the UI and agent use)
+
+Set `AGENT_USER_EMAIL` in `.env` (already in `.env.example`) so CLI actions have an owner.
+
+```bash
+pnpm action start-audit --url https://example.com
+pnpm action list-issues --auditId <id>
+pnpm action propose-fix --issueId <id>
+pnpm action accept-fix --proposalId <id>
+```
+
+### Checks
+
+```bash
+pnpm test
+pnpm typecheck
+pnpm build
+```
+
+## Connect Builder.io (your step)
+
+AI model calls use **only** Builder.io managed free credits. Connecting requires your Builder account:
+
+1. Run `pnpm dev` and open the app.
+2. Go to **Settings → Agent / AI** (or the model picker in chat).
+3. Choose **Use Builder.io** and sign in to your Builder account when prompted.
+4. Leave `A11Y_MOCK_LLM` unset (or `false`) so unknown rules can call the agent instead of the mock.
+5. Free plan is roughly **15 credits/day, 60/month** — audits stay free; only uncovered fix proposals spend credits.
+
+You do **not** need OpenAI, Anthropic, or Ollama keys for this project.
+
+## Stack notes
+
+- Agent-Native Chat template: shared `defineAction()` for UI + agent.
+- Local DB: PGlite (`DATABASE_URL=pglite:./data/pglite`). Production will need hosted Postgres (Neon or similar) — not chosen yet.
+- Deploy target (later): Cloudflare Workers (`NITRO_PRESET=cloudflare_module`) on the **ramanduke** account. Not deployed in this slice.
+
+## Actions
+
+| Action | Purpose |
+| --- | --- |
+| `start-audit` | Fetch URL → axe → store audit + issues |
+| `get-audit` / `list-audits` | Read audits |
+| `list-issues` / `get-issue` | Read issues (+ latest proposal) |
+| `propose-fix` | Heuristic → mock → or `needs_builder` |
+| `accept-fix` / `reject-fix` | Decide on a proposal |
+| `list-accepted-fixes` | Accepted checklist for an audit |
+
+## License
+
+Private hackathon entry for now. Framework scaffold retains its upstream notices.

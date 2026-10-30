@@ -47,6 +47,8 @@ const SIDEBAR_COLLAPSE_KEY = "chat.sidebar.collapsed";
 function routeOwnsToolbar(pathname: string): boolean {
   return (
     pathname === HOME_PATH ||
+    pathname === "/audit" ||
+    pathname.startsWith("/audit/") ||
     isChatPathname(pathname) ||
     pathname === "/database" ||
     pathname.startsWith("/extensions")

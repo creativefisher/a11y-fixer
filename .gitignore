@@ -41,3 +41,9 @@ learnings.md
 .vercel/
 .agent-native/
 data/*.lock
+
+# Local secrets and PGlite data
+.env.local
+.dev.vars
+data/
+*.pglite
