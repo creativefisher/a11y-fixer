@@ -47,3 +47,4 @@ data/*.lock
 .dev.vars
 data/
 *.pglite
+.wrangler/

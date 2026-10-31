@@ -3,21 +3,32 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { getDb, schema } from "../server/db/index.js";
-import { AUDIT_LIMITATIONS } from "../server/lib/audit-limits.js";
+import {
+  AUDIT_LIMITATIONS_BROWSER,
+  AUDIT_LIMITATIONS_SERVER,
+} from "../server/lib/audit-limits.js";
 import { fetchPageHtml, normalizeAuditUrl } from "../server/lib/fetch-html.js";
 import { requireOwnerEmail } from "../server/lib/owner.js";
-import { runAxeOnHtml } from "../server/lib/run-axe.js";
-import { scoreFromOpenIssues } from "../server/lib/score.js";
+import { persistAuditFindings } from "../server/lib/persist-audit-results.js";
+import { runReducedAuditOnHtml } from "../server/lib/reduced-audit.js";
 
 export default defineAction({
   description:
-    "Fetch a public URL, run an axe-core accessibility audit (HTML + jsdom; no color-contrast), and store issues. Returns auditId.",
+    "Fetch a public URL's HTML (SSRF-safe). Default execution=client returns HTML so the Audits UI can run full axe-core in a sandboxed iframe (includes color-contrast), then call complete-audit. execution=server runs a reduced Workers-safe check (no jsdom) and completes immediately — use this for agents without a browser.",
   schema: z.object({
     url: z.string().describe("Public http(s) URL to audit"),
+    execution: z
+      .enum(["client", "server"])
+      .optional()
+      .describe(
+        "client (default): return HTML for browser axe + complete-audit. server: reduced audit now.",
+      ),
   }),
   outputSchema: z.object({
     auditId: z.string(),
-    status: z.enum(["completed", "failed"]),
+    status: z.enum(["awaiting_browser", "completed", "failed"]),
+    url: z.string(),
+    html: z.string().nullable(),
     score: z.number().nullable(),
     issueCount: z.number(),
     openIssueCount: z.number(),
@@ -25,12 +36,15 @@ export default defineAction({
     errorMessage: z.string().nullable(),
   }),
   deferLoading: false,
-  run: async ({ url }, ctx) => {
+  run: async ({ url, execution }, ctx) => {
     const ownerEmail = requireOwnerEmail(ctx);
+    const mode = execution ?? "client";
     const parsed = normalizeAuditUrl(url);
     const auditId = crypto.randomUUID();
     const db = getDb();
     const now = new Date().toISOString();
+    const limitations =
+      mode === "server" ? AUDIT_LIMITATIONS_SERVER : AUDIT_LIMITATIONS_BROWSER;
 
     await db.insert(schema.audits).values({
       id: auditId,
@@ -40,7 +54,7 @@ export default defineAction({
       issueCount: 0,
       openIssueCount: 0,
       errorMessage: null,
-      limitations: AUDIT_LIMITATIONS,
+      limitations,
       ownerEmail,
       createdAt: now,
       completedAt: null,
@@ -48,50 +62,38 @@ export default defineAction({
 
     try {
       const html = await fetchPageHtml(parsed);
-      const findings = await runAxeOnHtml(html, parsed.toString());
-      const impacts = findings.map((f) => f.impact);
-      const score = scoreFromOpenIssues(impacts);
-      const completedAt = new Date().toISOString();
 
-      if (findings.length > 0) {
-        await db.insert(schema.issues).values(
-          findings.map((finding) => ({
-            id: crypto.randomUUID(),
-            auditId,
-            ruleId: finding.ruleId,
-            impact: finding.impact,
-            help: finding.help,
-            description: finding.description,
-            helpUrl: finding.helpUrl,
-            selector: finding.selector,
-            html: finding.html,
-            failureSummary: finding.failureSummary,
-            status: "open" as const,
-            ownerEmail,
-            createdAt: completedAt,
-          })),
-        );
+      if (mode === "server") {
+        const findings = runReducedAuditOnHtml(html);
+        const saved = await persistAuditFindings({
+          auditId,
+          ownerEmail,
+          findings,
+          limitations,
+        });
+        return {
+          auditId,
+          status: "completed" as const,
+          url: parsed.toString(),
+          html: null,
+          score: saved.score,
+          issueCount: saved.issueCount,
+          openIssueCount: saved.openIssueCount,
+          limitations: saved.limitations,
+          errorMessage: null,
+        };
       }
 
-      await db
-        .update(schema.audits)
-        .set({
-          status: "completed",
-          score,
-          issueCount: findings.length,
-          openIssueCount: findings.length,
-          completedAt,
-          errorMessage: null,
-        })
-        .where(eq(schema.audits.id, auditId));
-
+      // Client path: leave audit running; UI runs axe and calls complete-audit.
       return {
         auditId,
-        status: "completed" as const,
-        score,
-        issueCount: findings.length,
-        openIssueCount: findings.length,
-        limitations: AUDIT_LIMITATIONS,
+        status: "awaiting_browser" as const,
+        url: parsed.toString(),
+        html,
+        score: null,
+        issueCount: 0,
+        openIssueCount: 0,
+        limitations,
         errorMessage: null,
       };
     } catch (error) {
@@ -100,7 +102,10 @@ export default defineAction({
         typeof error === "object" &&
         "message" in error &&
         typeof (error as { message: unknown }).message === "string"
-          ? (error as { message: string }).message.replace(/^Action \S+ failed:\s*/, "")
+          ? (error as { message: string }).message.replace(
+              /^Action \S+ failed:\s*/,
+              "",
+            )
           : "Audit failed.";
       const errorCode =
         error &&
@@ -126,7 +131,6 @@ export default defineAction({
         })
         .where(eq(schema.audits.id, auditId));
 
-      // Re-throw contract failures as-is; otherwise wrap.
       if (error && typeof error === "object" && "errorCode" in error) {
         throw error;
       }

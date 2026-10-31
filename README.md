@@ -6,8 +6,9 @@ Built with [Builder.io Agent-Native](https://www.agent-native.com/docs) for the 
 
 ## What this slice does
 
-- **Audit (no LLM):** fetches HTML, runs axe-core inside jsdom, stores issues in Postgres/PGlite.
-- **Honest limits:** color contrast is **not** checked (jsdom cannot compute real styles). The UI says so.
+- **Audit (no LLM):** server fetches public HTML (SSRF-safe). The Audits UI runs **full axe-core in your browser** inside a sandboxed iframe (`srcdoc`, scripts disabled), then saves findings via `complete-audit`. That restores **color-contrast** checks.
+- **Agents without a browser:** call `start-audit` with `execution=server` for a reduced Workers-safe HTML check (image-alt, lang, empty buttons/links, etc.) — no jsdom on Cloudflare Workers.
+- **Honest limits:** browser path audits the initial HTML snapshot only (not after client-side hydration). Pages that block bots or require login cannot be fetched. Some hosts (e.g. W3C demos) return 403 to Worker egress.
 - **Fix proposals (frugal):** common rules get free deterministic heuristics. Unknown rules ask you to connect Builder.io free credits (`Use Builder.io`). With `A11Y_MOCK_LLM=true`, unknown rules get a mock proposal for offline demos/tests.
 - **Accept / reject:** before/after view; accepted fixes mark the issue fixed.
 
@@ -36,10 +37,11 @@ A page with known failures is served at `/fixtures/bad-a11y.html`. To audit it f
 Set `AGENT_USER_EMAIL` in `.env` (already in `.env.example`) so CLI actions have an owner.
 
 ```bash
-pnpm action start-audit --url https://example.com
+pnpm action start-audit --url https://example.com --execution server
 pnpm action list-issues --auditId <id>
 pnpm action propose-fix --issueId <id>
 pnpm action accept-fix --proposalId <id>
+# UI path: start-audit (default client) → browser axe → complete-audit
 ```
 
 ### Checks
@@ -64,15 +66,24 @@ You do **not** need OpenAI, Anthropic, or Ollama keys for this project.
 
 ## Stack notes
 
-- Agent-Native Chat template: shared `defineAction()` for UI + agent.
-- Local DB: PGlite (`DATABASE_URL=pglite:./data/pglite`). Production will need hosted Postgres (Neon or similar) — not chosen yet.
-- Deploy target (later): Cloudflare Workers (`NITRO_PRESET=cloudflare_module`) on the **ramanduke** account. Not deployed in this slice.
+- Agent-Native Chat template: shared `defineAction()` for UI + agent (same path for both).
+- Local DB: PGlite (`DATABASE_URL=pglite:./data/pglite`). Production: Neon Postgres + Cloudflare Workers (`NITRO_PRESET=cloudflare_module`) on **ramanduke** (workers.dev only, free plan).
+- Cloudflare build: after `NITRO_PRESET=cloudflare_module pnpm build`, run `node scripts/patch-cloudflare-output.mjs` (documented Workers tweaks: Ajv eval flag, React alias, tab-id `randomUUID` workaround, DB pool scope). Do **not** reintroduce jsdom on the Worker.
+
+## Production
+
+Live: `https://a11y-fixer.ramanduke.workers.dev`
+
+- Auth: Better Auth email/password via `/_agent-native/auth/register` and `/login`. Data is scoped by `ownerEmail`. Do **not** set `AUTH_DISABLED` in production.
+- Secrets (wrangler): `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `NODE_ENV=production`. Leave `A11Y_MOCK_LLM` unset so Builder free credits can be used for uncovered fix proposals.
+- Deploy: build with a temporary production `.env` (Neon URL), `node scripts/patch-cloudflare-output.mjs`, then `wrangler deploy` from `.output/server` with account token.
 
 ## Actions
 
 | Action | Purpose |
 | --- | --- |
-| `start-audit` | Fetch URL → axe → store audit + issues |
+| `start-audit` | Fetch URL (SSRF-safe). Default `execution=client` returns HTML for browser axe; `execution=server` runs reduced audit and completes. |
+| `complete-audit` | Persist axe findings from the browser sandbox (UI path). |
 | `get-audit` / `list-audits` | Read audits |
 | `list-issues` / `get-issue` | Read issues (+ latest proposal) |
 | `propose-fix` | Heuristic → mock → or `needs_builder` |

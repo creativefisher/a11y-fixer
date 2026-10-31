@@ -1,4 +1,4 @@
-import type { AxeIssue } from "./run-axe.js";
+import type { AxeIssue } from "./axe-issue.js";
 
 export type FixProposalDraft = {
   beforeHtml: string;

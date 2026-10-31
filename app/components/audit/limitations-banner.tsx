@@ -1,7 +1,7 @@
 export function LimitationsBanner({ text }: { text?: string | null | undefined }) {
   const message =
     text?.trim() ||
-    "Color contrast is not checked: jsdom cannot compute real styles. Only the initial HTML is audited.";
+    "Axe runs in your browser on a sandboxed HTML snapshot (page scripts disabled). Only the initial server-fetched HTML is audited.";
   return (
     <div
       role="note"

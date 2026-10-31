@@ -19,6 +19,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { runAxeInBrowser } from "@/lib/run-axe-in-browser";
 import { AUDIT_PATH } from "@/lib/chat-paths";
 
 type Severity = "critical" | "serious" | "moderate" | "minor";
@@ -27,7 +28,10 @@ export function AuditLanding() {
   useSetPageTitle("Accessibility audits");
   const navigate = useNavigate();
   const startAudit = useActionMutation("start-audit");
+  const completeAudit = useActionMutation("complete-audit");
+  const [isRunningBrowserAxe, setIsRunningBrowserAxe] = useState(false);
   const auditsQuery = useActionQuery("list-audits", { limit: 20 });
+  const auditBusy = startAudit.isPending || completeAudit.isPending || isRunningBrowserAxe;
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-6">
@@ -36,10 +40,10 @@ export function AuditLanding() {
           Accessibility Fixer
         </h1>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Paste a public URL. We fetch the HTML, run axe-core in jsdom (no LLM),
-          list issues, then propose free heuristic fixes you can accept or
-          reject. Builder.io free credits are reserved for rules heuristics
-          cannot cover.
+          Paste a public URL. The server fetches HTML (SSRF-safe); axe-core runs
+          in your browser inside a sandboxed iframe (scripts off, color-contrast
+          on). Then propose free heuristic fixes — Builder.io free credits cover
+          rules heuristics cannot.
         </p>
       </header>
 
@@ -49,25 +53,65 @@ export function AuditLanding() {
         <CardHeader>
           <CardTitle>New audit</CardTitle>
           <CardDescription>
-            Works on public pages. Local fixture: start the app, then audit{" "}
-            <code className="text-xs">http://127.0.0.1:PORT/fixtures/bad-a11y.html</code>{" "}
-            with <code className="text-xs">A11Y_ALLOW_LOCAL_FETCH=true</code>.
+            Works on public pages. Full axe (incl. color contrast) runs in this
+            browser. Agents without a browser can call start-audit with
+            execution=&quot;server&quot; for a reduced check.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <UrlForm
-            isPending={startAudit.isPending}
+            isPending={auditBusy}
             onSubmit={(url) => {
               startAudit.mutate(
-                { url },
+                { url, execution: "client" },
                 {
                   onSuccess: (result) => {
-                    toast.success(
-                      result.status === "completed"
-                        ? `Audit done — ${result.issueCount} issue(s), score ${result.score}`
-                        : "Audit finished",
-                    );
-                    navigate(`${AUDIT_PATH}/${result.auditId}`);
+                    if (result.status === "completed") {
+                      toast.success(
+                        `Audit done — ${result.issueCount} issue(s), score ${result.score}`,
+                      );
+                      navigate(`${AUDIT_PATH}/${result.auditId}`);
+                      return;
+                    }
+                    if (result.status !== "awaiting_browser" || !result.html) {
+                      toast.error(result.errorMessage || "Audit did not return HTML");
+                      return;
+                    }
+                    setIsRunningBrowserAxe(true);
+                    void (async () => {
+                      try {
+                        const findings = await runAxeInBrowser(
+                          result.html!,
+                          result.url,
+                        );
+                        completeAudit.mutate(
+                          { auditId: result.auditId, issues: findings },
+                          {
+                            onSuccess: (saved) => {
+                              toast.success(
+                                `Audit done — ${saved.issueCount} issue(s), score ${saved.score}`,
+                              );
+                              navigate(`${AUDIT_PATH}/${saved.auditId}`);
+                            },
+                            onError: (error) => {
+                              toast.error(
+                                error instanceof Error
+                                  ? error.message
+                                  : "Saving audit failed",
+                              );
+                            },
+                            onSettled: () => setIsRunningBrowserAxe(false),
+                          },
+                        );
+                      } catch (error) {
+                        setIsRunningBrowserAxe(false);
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "Browser axe failed",
+                        );
+                      }
+                    })();
                   },
                   onError: (error) => {
                     toast.error(
